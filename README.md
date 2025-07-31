@@ -100,8 +100,8 @@ python test_dvm.py "Hello, Echo DVM!"
 | Kind  | Description | Usage |
 |-------|-------------|-------|
 | 25000 | Job Requests/Responses | Both requests and responses use this kind |
-| 11998 | Heartbeat Events | Service health monitoring - sent every 10 seconds |
 | 31999 | DVM Announcements | Service discovery (not implemented in this example) |
+| 31998 | Heartbeat Events | Service health monitoring (not implemented in this example) |
 
 ### How It Works
 
