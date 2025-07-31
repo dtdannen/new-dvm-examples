@@ -53,16 +53,26 @@ class EchoDVM:
         await self.subscribe_to_job_requests()
     
     async def subscribe_to_job_requests(self):
-        """Subscribe to DVM job requests"""
-        # Create a single filter for kind 25000 events with category hashtag
-        # This will catch both targeted and open requests
-        job_filter = (Filter()
-                     .kind(Kind(25000))
-                     .hashtag(self.category)
-                     .since(Timestamp.now()))
+        """Subscribe to DVM job requests - both open and targeted requests"""
         
-        subscription_id = await self.client.subscribe(job_filter)
-        print(f"Subscribed to job requests for category '{self.category}': {subscription_id}")
+        # Filter 1: Open requests (category-based) - any DVM can respond
+        open_filter = (Filter()
+                      .kind(Kind(25000))
+                      .hashtag(self.category)
+                      .since(Timestamp.now()))
+        
+        # Filter 2: Targeted requests (p-tag based) - specifically targeting this DVM
+        targeted_filter = (Filter()
+                          .kind(Kind(25000))
+                          .reference(f"p:{self.keys.public_key().to_hex()}")
+                          .since(Timestamp.now()))
+        
+        # Subscribe to both filters
+        open_subscription = await self.client.subscribe(open_filter)
+        targeted_subscription = await self.client.subscribe(targeted_filter)
+        
+        print(f"Subscribed to OPEN job requests (category '{self.category}'): {open_subscription}")
+        print(f"Subscribed to TARGETED job requests (p-tag): {targeted_subscription}")
     
     def extract_input_from_event(self, event: Event) -> str:
         """Extract input data from job request event"""
@@ -140,6 +150,15 @@ class EchoDVM:
         
         return result_event
     
+    def is_targeted_request(self, event: Event) -> bool:
+        """Check if this is a targeted request (has p-tag with our pubkey)"""
+        our_pubkey_hex = self.keys.public_key().to_hex()
+        for tag in event.tags().to_vec():
+            tag_vec = tag.as_vec()
+            if len(tag_vec) >= 2 and tag_vec[0] == "p" and tag_vec[1] == our_pubkey_hex:
+                return True
+        return False
+    
     async def handle_job_request(self, event: Event):
         """Handle a single job request"""
         job_id = event.id().to_hex()
@@ -154,7 +173,10 @@ class EchoDVM:
         
         self.processed_jobs.add(job_id)
         
-        print(f"\n=== Processing job request ===")
+        # Determine request type
+        request_type = "TARGETED" if self.is_targeted_request(event) else "OPEN"
+        
+        print(f"\n=== Processing {request_type} job request ===")
         print(f"Job ID: {job_id[:8]}")
         print(f"From: {event.author().to_bech32()}")
         print(f"Content: {event.content()}")

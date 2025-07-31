@@ -1,4 +1,4 @@
-e#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Test client for Echo DVM - Sends job requests and waits for responses
 """
@@ -122,9 +122,9 @@ class DVMTestClient:
         print(f"Sent job request: {job_id[:8]}")
         print(f"Input: '{input_text}'")
         if dvm_pubkey:
-            print(f"Targeted DVM: {dvm_pubkey[:8]}...")
+            print(f"TARGETED request - DVM: {dvm_pubkey[:8]}...")
         else:
-            print(f"Open request for category: {category}")
+            print(f"OPEN request - category: {category}")
         print()
         
         return job_request
@@ -200,6 +200,7 @@ class DVMTestClient:
             await self.initialize()
         
         print("\n=== Echo DVM Test Client ===")
+        print("This will send BOTH open and targeted requests for each message")
         print("Type your message to send to the Echo DVM")
         print("Type 'quit' to exit")
         print("Type 'status' to see pending requests")
@@ -257,17 +258,25 @@ class DVMTestClient:
                     # Reset the response event
                     handler.response_received.clear()
                     
-                    # Send the job request
-                    job_request = await self.send_job_request(user_input)
-                    current_request_event = job_request
+                    # Send BOTH types of job requests
+                    print("Sending OPEN request (category-based)...")
+                    open_request = await self.send_job_request(user_input)
                     
-                    # Show waiting message and wait for response
-                    print("Waiting for response...")
+                    # Get DVM pubkey for targeted request
+                    if self.dvm_npub:
+                        dvm_pubkey_hex = PublicKey.parse(self.dvm_npub).to_hex()
+                        print("Sending TARGETED request (p-tag based)...")
+                        targeted_request = await self.send_job_request(user_input, dvm_pubkey_hex)
+                    else:
+                        print("⚠️  No DVM npub available - skipping targeted request")
+                    
+                    # Show waiting message and wait for responses
+                    print("Waiting for responses...")
                     
                     try:
-                        # Wait for response with timeout
+                        # Wait for responses with timeout
                         await asyncio.wait_for(handler.response_received.wait(), timeout=30.0)
-                        print("Response received! Ready for next input.\n")
+                        print("Response(s) received! Ready for next input.\n")
                     except asyncio.TimeoutError:
                         print("⚠️  No response received within 30 seconds\n")
                     
