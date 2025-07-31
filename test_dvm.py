@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+e#!/usr/bin/env python3
 """
 Test client for Echo DVM - Sends job requests and waits for responses
 """
@@ -17,13 +17,18 @@ class DVMTestClient:
     Simple test client to send job requests to DVMs
     """
     
-    def __init__(self, keys: Keys, relay_urls: list):
+    def __init__(self, keys: Keys, relay_urls: list, dvm_npub: str = None):
         self.keys = keys
         self.relay_urls = relay_urls
         self.client = None
         self.waiting_for_response = {}
+        self.heartbeat_buffer = []  # Buffer heartbeats during user input
+        self.collecting_input = False  # Flag to track when we're waiting for user input
+        self.dvm_npub = dvm_npub  # DVM we're monitoring
         
         print(f"Test Client Public Key: {self.keys.public_key().to_bech32()}")
+        if dvm_npub:
+            print(f"Monitoring DVM: {dvm_npub[:8]}...")
     
     async def initialize(self):
         """Initialize the client and connect to relays"""
@@ -44,15 +49,25 @@ class DVMTestClient:
         await self.subscribe_to_responses()
     
     async def subscribe_to_responses(self):
-        """Subscribe to DVM responses directed at us"""
-        # Subscribe to kind 25000 events that tag us (responses to our requests)
-        filter_responses = (Filter()
-                           .kind(Kind(25000))
-                           .pubkey(self.keys.public_key())
-                           .since(Timestamp.now()))
+        """Subscribe to all events from the specific DVM we're monitoring"""
+        if not self.dvm_npub:
+            print("Warning: No DVM npub specified, cannot subscribe to DVM events")
+            return
         
-        subscription_id = await self.client.subscribe(filter_responses)
-        print(f"Subscribed to responses: {subscription_id}")
+        # Create PublicKey object from npub
+        try:
+            dvm_pubkey = PublicKey.parse(self.dvm_npub)
+        except Exception as e:
+            print(f"Error parsing DVM npub: {e}")
+            return
+        
+        # Single subscription to all events from this DVM (both responses and heartbeats)
+        filter_dvm_events = (Filter()
+                            .author(dvm_pubkey)
+                            .since(Timestamp.now()))
+        
+        subscription_id = await self.client.subscribe(filter_dvm_events)
+        print(f"Subscribed to all events from DVM: {subscription_id}")
     
     def extract_referenced_event(self, event: Event) -> Optional[str]:
         """Extract the event ID that this event is referencing"""
@@ -145,6 +160,40 @@ class DVMTestClient:
         print(f"Response Time: {response_time:.2f} seconds")
         print("========================\n")
     
+    async def handle_heartbeat(self, event: Event):
+        """Handle a heartbeat event from a DVM"""
+        dvm_pubkey = event.author().to_bech32()
+        status = event.content()
+        timestamp = event.created_at().as_secs()
+        
+        heartbeat_info = {
+            "dvm_pubkey": dvm_pubkey,
+            "status": status,
+            "timestamp": timestamp
+        }
+        
+        if self.collecting_input:
+            # Buffer the heartbeat to print later
+            self.heartbeat_buffer.append(heartbeat_info)
+        else:
+            # Print immediately
+            self.print_heartbeat(heartbeat_info)
+    
+    def print_heartbeat(self, heartbeat_info):
+        """Print a heartbeat with formatted timestamp"""
+        import datetime
+        dt = datetime.datetime.fromtimestamp(heartbeat_info["timestamp"])
+        print(f"💓 Heartbeat from DVM {heartbeat_info['dvm_pubkey'][:8]}... at {dt.strftime('%H:%M:%S')}: {heartbeat_info['status']}")
+    
+    def print_buffered_heartbeats(self):
+        """Print all buffered heartbeats and clear the buffer"""
+        if self.heartbeat_buffer:
+            print(f"\n--- Received {len(self.heartbeat_buffer)} heartbeat(s) during input ---")
+            for heartbeat in self.heartbeat_buffer:
+                self.print_heartbeat(heartbeat)
+            print("--- End of buffered heartbeats ---\n")
+            self.heartbeat_buffer.clear()
+    
     async def run_interactive_test(self):
         """Run interactive test session"""
         if not self.client:
@@ -169,6 +218,8 @@ class DVMTestClient:
                 if event.kind().as_u16() == 25000:
                     await self.test_client.handle_response(event)
                     self.response_received.set()
+                elif event.kind().as_u16() == 11998:
+                    await self.test_client.handle_heartbeat(event)
 
             async def handle_msg(self, relay_url: str, msg: RelayMessage):
                 pass
@@ -183,8 +234,15 @@ class DVMTestClient:
         try:
             while True:
                 try:
+                    # Set flag to buffer heartbeats during input collection
+                    self.collecting_input = True
+                    
                     # Get input from user
                     user_input = input("Enter message: ").strip()
+                    
+                    # Stop buffering heartbeats and print any collected
+                    self.collecting_input = False
+                    self.print_buffered_heartbeats()
                     
                     if user_input.lower() == 'quit':
                         break
@@ -209,10 +267,9 @@ class DVMTestClient:
                     try:
                         # Wait for response with timeout
                         await asyncio.wait_for(handler.response_received.wait(), timeout=30.0)
+                        print("Response received! Ready for next input.\n")
                     except asyncio.TimeoutError:
-                        print("⚠️  No response received within 30 seconds")
-                    
-                    print()  # Add spacing before next prompt
+                        print("⚠️  No response received within 30 seconds\n")
                     
                 except KeyboardInterrupt:
                     break
@@ -256,6 +313,24 @@ class DVMTestClient:
         finally:
             notification_task.cancel()
 
+def load_dvm_pubkey():
+    """Load DVM public key from .env file"""
+    from pathlib import Path
+    
+    env_file = Path(".env")
+    if not env_file.exists():
+        print("No .env file found. Please run the DVM first to generate keys.")
+        return None
+    
+    with open(env_file, 'r') as f:
+        for line in f:
+            if line.strip().startswith("DVM_NPUB="):
+                npub = line.strip().split("=", 1)[1].strip('"\'')
+                return npub
+    
+    print("DVM_NPUB not found in .env file")
+    return None
+
 async def main():
     """Main function"""
     
@@ -267,6 +342,12 @@ async def main():
         client_keys = Keys.generate()
         print(f"Generated client keys: {client_keys.secret_key().to_bech32()}")
     
+    # Load DVM public key from .env file
+    dvm_npub = load_dvm_pubkey()
+    if not dvm_npub:
+        print("Warning: No DVM npub found. Heartbeat monitoring will not work.")
+        print("Run the echo_dvm.py first to generate the .env file.")
+    
     # Same relays as the DVM
     relay_urls = [
         "wss://relay.damus.io",
@@ -274,8 +355,8 @@ async def main():
         "wss://relay.primal.net"
     ]
     
-    # Create test client
-    client = DVMTestClient(client_keys, relay_urls)
+    # Create test client with DVM npub for monitoring
+    client = DVMTestClient(client_keys, relay_urls, dvm_npub)
     
     # Check for command line arguments
     if len(sys.argv) > 1:
@@ -283,7 +364,7 @@ async def main():
         message = " ".join(sys.argv[1:])
         target_dvm = os.getenv("TARGET_DVM_NPUB")
         if target_dvm:
-            target_pubkey = PublicKey.from_bech32(target_dvm).to_hex()
+            target_pubkey = PublicKey.parse(target_dvm).to_hex()
         else:
             target_pubkey = None
         

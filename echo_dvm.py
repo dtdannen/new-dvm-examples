@@ -179,6 +179,21 @@ class EchoDVM:
         
         print("=== Job completed ===\n")
     
+    async def send_heartbeat(self):
+        """Send periodic heartbeat to indicate DVM is online"""
+        while True:
+            try:
+                # Create heartbeat event (kind 11998)
+                event_builder = EventBuilder(kind=Kind(11998), content="online")
+                await self.client.send_event_builder(event_builder)
+                current_time = Timestamp.now()
+                print(f"Sent heartbeat at {current_time.as_secs()}")
+            except Exception as e:
+                print(f"Error sending heartbeat: {e}")
+            
+            # Wait 10 seconds before next heartbeat (for testing)
+            await asyncio.sleep(10)
+    
     async def run(self):
         """Main run loop for the DVM"""
         if not self.client:
@@ -203,23 +218,67 @@ class EchoDVM:
         
         handler = NotificationHandler(self)
         
-        # Start handling notifications
-        await self.client.handle_notifications(handler)
+        # Start heartbeat task
+        heartbeat_task = asyncio.create_task(self.send_heartbeat())
+        
+        try:
+            # Start handling notifications
+            await self.client.handle_notifications(handler)
+        finally:
+            # Cancel heartbeat task when shutting down
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+
+def load_or_create_keys():
+    """Load DVM keys from .env file or create new ones"""
+    import os
+    from pathlib import Path
+    
+    env_file = Path(".env")
+    
+    # Try to load existing keys from .env file first
+    if env_file.exists():
+        with open(env_file, 'r') as f:
+            for line in f:
+                if line.strip().startswith("DVM_SECRET_KEY="):
+                    nsec = line.strip().split("=", 1)[1].strip('"\'')
+                    try:
+                        keys = Keys.parse(nsec)
+                        print(f"Loaded existing DVM keys from .env file")
+                        return keys
+                    except Exception as e:
+                        print(f"Error parsing keys from .env: {e}")
+                        break
+    
+    # Generate new keys if none found or parsing failed
+    keys = Keys.generate()
+    nsec = keys.secret_key().to_bech32()
+    npub = keys.public_key().to_bech32()
+    pubkey_hex = keys.public_key().to_hex()
+    
+    # Save to .env file
+    env_content = f"""# DVM Keys - Auto-generated
+DVM_SECRET_KEY={nsec}
+DVM_NPUB={npub}
+DVM_PUBKEY_HEX={pubkey_hex}
+"""
+    
+    with open(env_file, 'w') as f:
+        f.write(env_content)
+    
+    print(f"Generated new DVM keys and saved to .env file")
+    print(f"DVM NPUB: {npub}")
+    
+    return keys
 
 async def main():
     """Main function to run the Echo DVM"""
     
-    # Load keys from environment or generate new ones
-    nsec = os.getenv("DVM_SECRET_KEY")
-    if not nsec:
-        # Generate new keys for testing
-        keys = Keys.generate()
-        nsec = keys.secret_key().to_bech32()
-        print(f"Generated new keys. Set environment variable:")
-        print(f"export DVM_SECRET_KEY='{nsec}'")
-        print()
-    else:
-        keys = Keys.parse(nsec)
+    # Load or create DVM keys
+    keys = load_or_create_keys()
     
     # Define relay URLs
     relay_urls = [

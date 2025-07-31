@@ -13,9 +13,11 @@ Data Vending Machines are APIs on Nostr - computational services that anyone can
 
 - **Simple Echo Service**: Returns whatever text you send it
 - **Modern DVM Architecture**: Uses the new simplified event kinds (25000 for both requests and responses)
+- **Heartbeat Monitoring**: Sends regular heartbeat events (kind 11998) every 10 seconds for service health monitoring
+- **Persistent Identity**: Automatically saves and reuses DVM keys across sessions using `.env` file
 - **Category-Based Discovery**: Uses "echo" category for easy discovery
 - **Robust Error Handling**: Handles duplicates, errors, and edge cases
-- **Easy Testing**: Includes interactive test client
+- **Easy Testing**: Includes interactive test client with real-time heartbeat display
 
 ## Installation
 
@@ -98,8 +100,8 @@ python test_dvm.py "Hello, Echo DVM!"
 | Kind  | Description | Usage |
 |-------|-------------|-------|
 | 25000 | Job Requests/Responses | Both requests and responses use this kind |
+| 11998 | Heartbeat Events | Service health monitoring - sent every 10 seconds |
 | 31999 | DVM Announcements | Service discovery (not implemented in this example) |
-| 31998 | Heartbeat Events | Service health monitoring (not implemented in this example) |
 
 ### How It Works
 
