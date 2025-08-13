@@ -1,0 +1,756 @@
+import asyncio
+from nostr_sdk import PublicKey, ClientBuilder, Filter, Kind, init_logger, LogLevel, AdmitPolicy, AdmitStatus, Event, \
+    RelayUrl, uniffi_set_event_loop
+from datetime import timedelta
+
+class Filtering(AdmitPolicy):
+    def __init__(self):
+        self.muted_public_keys = set()
+
+    def mute(self, pk: PublicKey):
+        self.muted_public_keys.add(pk)
+
+    async def admit_connection(self, relay_url: RelayUrl) -> AdmitStatus:
+        return AdmitStatus.success()
+
+    async def admit_event(self, relay_url: RelayUrl, subscription_id: str, event: Event) -> AdmitStatus:
+        if event.author() in self.muted_public_keys:
+            return AdmitStatus.rejected()
+        else:
+            return AdmitStatus.success()
+
+async def main():
+    uniffi_set_event_loop(asyncio.get_running_loop())
+
+    # Init logger
+    init_logger(LogLevel.INFO)
+
+    muted_public_key = PublicKey.parse("npub1l2vyh47mk2p0qlsku7hg0vn29faehy9hy34ygaclpn66ukqp3afqutajft")
+    other_public_key = PublicKey.parse("npub1xtscya34g58tk0z605fvr788k263gsu6cy9x0mhnm87echrgufzsevkk5s")
+
+    filtering = Filtering()
+    filtering.mute(muted_public_key)
+
+    # Init client
+    client = ClientBuilder().admit_policy(filtering).build()
+
+    url = RelayUrl.parse("wss://relay.damus.io")
+    await client.add_relay(url)
+
+    await client.connect()
+
+    # Get events
+    f = Filter().authors([muted_public_key, other_public_key]).kind(Kind(0))
+    events = await client.fetch_events(f, timedelta(seconds=10))
+    print(f"Received {events.len()} events")
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
+
+import asyncio
+from nostr_sdk import Client, Keys, Event, UnsignedEvent, Filter, \
+    HandleNotification, Timestamp, UnwrappedGift, init_logger, LogLevel, Kind, KindStandard, NostrSigner
+
+
+async def main():
+    init_logger(LogLevel.DEBUG)
+
+    # sk = SecretKey.from_bech32("nsec1ufnus6pju578ste3v90xd5m2decpuzpql2295m3sknqcjzyys9ls0qlc85")
+    # keys = Keys(sk)
+    # OR
+    keys = Keys.parse("nsec1ufnus6pju578ste3v90xd5m2decpuzpql2295m3sknqcjzyys9ls0qlc85")
+
+    pk = keys.public_key()
+    print(f"Bot public key: {pk.to_bech32()}")
+
+    signer = NostrSigner.keys(keys)
+    client = Client(signer)
+
+    await client.add_relay("wss://relay.damus.io")
+    await client.add_relay("wss://nostr.mom")
+    await client.add_relay("wss://nostr.oxtr.dev")
+    await client.connect()
+
+    now = Timestamp.now()
+
+    nip59_filter = Filter().pubkey(pk).kind(Kind.from_std(KindStandard.GIFT_WRAP)).limit(0)
+    await client.subscribe([nip59_filter], None)
+
+    class NotificationHandler(HandleNotification):
+        async def handle(self, relay_url, subscription_id, event: Event):
+            print(f"Received new event from {relay_url}: {event.as_json()}")
+            if event.kind().as_std() == KindStandard.GIFT_WRAP:
+                print("Decrypting NIP59 event")
+                try:
+                    # Extract rumor
+                    unwrapped_gift = await UnwrappedGift.from_gift_wrap(signer, event)
+                    sender = unwrapped_gift.sender()
+                    rumor: UnsignedEvent = unwrapped_gift.rumor()
+
+                    # Check timestamp of rumor
+                    if rumor.created_at().as_secs() >= now.as_secs():
+                        if rumor.kind().as_std() == KindStandard.PRIVATE_DIRECT_MESSAGE:
+                            msg = rumor.content()
+                            print(f"Received new msg [sealed]: {msg}")
+                            await client.send_private_msg(sender, f"Echo: {msg}", None)
+                        else:
+                            print(f"{rumor.as_json()}")
+                except Exception as e:
+                    print(f"Error during content NIP59 decryption: {e}")
+
+        async def handle_msg(self, relay_url, msg):
+            _var = None
+
+    await client.handle_notifications(NotificationHandler())
+
+    # To handle notifications and continue with code execution, use:
+    # asyncio.create_task(client.handle_notifications(NotificationHandler()))
+
+    # Keep up the script (if using the create_task)
+    # while True:
+    #   await asyncio.sleep(5)
+
+if __name__ == '__main__':
+    asyncio.run(main())
+
+import asyncio
+from nostr_sdk import Keys, ClientBuilder, Options, EventBuilder, Connection, ConnectionTarget, init_logger, LogLevel
+
+
+async def main():
+    init_logger(LogLevel.INFO)
+
+    # Configure client to use proxy for `.onion` relays
+    connection = Connection().addr("127.0.0.1:9050").target(ConnectionTarget.ONION)
+    opts = Options().connection(connection)
+    client = ClientBuilder().opts(opts).build()
+
+    await client.add_relay("wss://relay.damus.io")
+    await client.add_relay("ws://oxtrdevav64z64yb7x6rjg4ntzqjhedm5b5zjqulugknhzr46ny2qbad.onion")
+    await client.connect()
+
+    keys = Keys.generate()
+    print(keys.public_key().to_bech32())
+
+    event = EventBuilder.text_note("Hello from rust-nostr Python bindings!").sign_with_keys(keys)
+    output = await client.send_event(event)
+    print("Event sent:")
+    print(f" hex:    {output.id.to_hex()}")
+    print(f" bech32: {output.id.to_bech32()}")
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
+
+import asyncio
+from datetime import timedelta
+from nostr_sdk import *
+
+
+async def main():
+    # Init logger
+    init_logger(LogLevel.INFO)
+
+    # Initialize client without signer
+    # client = Client()
+
+    # Or, initialize with Keys signer
+    keys = Keys.generate()
+    signer = NostrSigner.keys(keys)
+
+    # Or, initialize with NIP46 signer
+    # app_keys = Keys.parse("..")
+    # uri = NostrConnectUri.parse("bunker://.. or nostrconnect://..")
+    # connect = NostrConnect(uri, app_keys, timedelta(seconds=60), None)
+    # signer = NostrSigner.nostr_connect(connect)
+
+    client = Client(signer)
+
+    # Add relays and connect
+    await client.add_relay("wss://relay.damus.io")
+    await client.add_relay("wss://nos.lol")
+    await client.connect()
+
+    # Send an event using the Nostr Signer
+    builder = EventBuilder.text_note("Test from rust-nostr Python bindings!")
+    await client.send_event_builder(builder)
+    await client.set_metadata(Metadata().set_name("Testing rust-nostr"))
+
+    # Mine a POW event and sign it with custom keys
+    custom_keys = Keys.generate()
+    print("Mining a POW text note...")
+    event = EventBuilder.text_note("Hello from rust-nostr Python bindings!").pow(20).sign_with_keys(custom_keys)
+    output = await client.send_event(event)
+    print("Event sent:")
+    print(f" hex:    {output.id.to_hex()}")
+    print(f" bech32: {output.id.to_bech32()}")
+    print(f" Successfully sent to:    {output.success}")
+    print(f" Failed to send to: {output.failed}")
+
+    await asyncio.sleep(2.0)
+
+    # Get events from relays
+    print("Getting events from relays...")
+    f = Filter().authors([keys.public_key(), custom_keys.public_key()])
+    events = await client.fetch_events([f], timedelta(seconds=10))
+    for event in events.to_vec():
+        print(event.as_json())
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
+
+import asyncio
+from nostr_sdk import *
+from nostr_sdk import uniffi_set_event_loop
+from typing import List
+
+
+async def main():
+    init_logger(LogLevel.INFO)
+
+    uniffi_set_event_loop(asyncio.get_running_loop())
+
+    # Example of custom in-memory database
+    class MyDatabase(CustomNostrDatabase):
+        def __init__(self):
+            self.seen_event_ids = {}
+            self.events = {}
+
+        def backend(self) -> str:
+            return "my-in-memory-backend"
+
+        async def save_event(self, e: Event) -> SaveEventStatus:
+            self.events[e.id()] = e
+            return SaveEventStatus.success()
+
+        async def check_id(self, event_id: EventId) -> DatabaseEventStatus:
+            if event_id in self.events:
+                return DatabaseEventStatus.SAVED
+            else:
+                return DatabaseEventStatus.NOT_EXISTENT
+
+        async def event_by_id(self, event_id) -> Event | None:
+            return self.events.get(event_id, None)
+
+        async def count(self, filter) -> int:
+            return 0
+
+        async def query(self, filter) -> Events:
+            # Fake algorithm
+            return list(self.events.values())[:10]
+
+        async def delete(self, filter):
+            return
+
+        async def wipe(self):
+            return
+
+    my_db = MyDatabase()
+    database = NostrDatabase.custom(my_db)
+    client = ClientBuilder().database(database).build()
+
+    await client.add_relay("wss://relay.damus.io")
+    await client.connect()
+
+    keys = Keys.parse("nsec1ufnus6pju578ste3v90xd5m2decpuzpql2295m3sknqcjzyys9ls0qlc85")
+    print(keys.public_key().to_bech32())
+
+    # Negentropy reconciliation
+    f = Filter().author(keys.public_key())
+    opts = SyncOptions()
+    await client.sync(f, opts)
+
+    # Query events from database
+    f = Filter().author(keys.public_key()).limit(10)
+    events = await client.database().query(f)
+    if events.len() == 0:
+        print("Query not found any event")
+    else:
+        for event in events.to_vec():
+            print(event.as_json())
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
+
+import asyncio
+
+from datetime import timedelta
+
+from aiohttp import ClientSession, ClientWebSocketResponse, WSMsgType
+from nostr_sdk import *
+
+
+class MyAdapter(WebSocketAdapter):
+    def __init__(self, session: ClientSession, ws: ClientWebSocketResponse):
+        self.session = session
+        self.websocket = ws
+
+    async def send(self, msg: WebSocketMessage):
+        try:
+            if msg.is_text():
+                await self.websocket.send_str(msg[0])
+            elif msg.is_binary():
+                await self.websocket.send_bytes(msg[0])
+        except Exception as e:
+            # Handle clean closure gracefully
+            print(f"Attempted to send on a closed WebSocket: {e}")
+            raise e
+
+    async def recv(self) -> WebSocketMessage | None:
+        try:
+            # Receive message
+            raw_msg = await self.websocket.receive()
+
+            if raw_msg.type == WSMsgType.TEXT:
+                return WebSocketMessage.TEXT(raw_msg.data)
+            elif raw_msg.type == WSMsgType.BINARY:
+                return WebSocketMessage.BINARY(raw_msg.data)
+            elif raw_msg.type == WSMsgType.PING:
+                return WebSocketMessage.PING(raw_msg.data)
+            elif raw_msg.type == WSMsgType.PONG:
+                return WebSocketMessage.PONG(raw_msg.data)
+            else:
+                raise "unknown message type"
+        except Exception as e:
+            raise e
+
+    async def close_connection(self):
+        await self.websocket.close()
+        await self.session.close()
+
+class MyWebSocketClient(CustomWebSocketTransport):
+    def support_ping(self) -> bool:
+        return False
+
+    async def connect(self, url: "str", mode: "ConnectionMode", timeout) -> WebSocketAdapterWrapper:
+        try:
+            session = ClientSession()
+            ws = await session.ws_connect(url)
+
+            adaptor = MyAdapter(session, ws)
+            wrapper = WebSocketAdapterWrapper(adaptor)
+
+            return wrapper
+        except Exception as e:
+            raise e
+
+
+async def main():
+    uniffi_set_event_loop(asyncio.get_running_loop())
+
+    # Init logger
+    init_logger(LogLevel.TRACE)
+
+    # Initialize client without signer
+    # client = Client()
+
+    # Or, initialize with Keys signer
+    keys = Keys.parse("nsec1ufnus6pju578ste3v90xd5m2decpuzpql2295m3sknqcjzyys9ls0qlc85")
+    signer = NostrSigner.keys(keys)
+
+    # Or, initialize with NIP46 signer
+    # app_keys = Keys.parse("..")
+    # uri = NostrConnectUri.parse("bunker://.. or nostrconnect://..")
+    # connect = NostrConnect(uri, app_keys, timedelta(seconds=60), None)
+    # signer = NostrSigner.nostr_connect(connect)
+
+    client = ClientBuilder().signer(signer).websocket_transport(MyWebSocketClient()).build()
+    #client = ClientBuilder().signer(signer).build()
+
+    # Add relays and connect
+    await client.add_relay("ws://127.0.0.1:7777")
+    await client.connect()
+
+    # Send an event using the Nostr Signer
+    builder = EventBuilder.text_note("Test from rust-nostr Python bindings!")
+    output = await client.send_event_builder(builder)
+
+    print("Event sent:")
+    print(f" hex:    {output.id.to_hex()}")
+    print(f" bech32: {output.id.to_bech32()}")
+    print(f" Successfully sent to:    {output.success}")
+    print(f" Failed to send to: {output.failed}")
+
+    await asyncio.sleep(2.0)
+
+    # Get events from relays
+    print("Getting events from relays...")
+    f = Filter().authors([keys.public_key()])
+    events = await client.fetch_events([f], timedelta(seconds=10))
+    for event in events.to_vec():
+        print(event.as_pretty_json())
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
+
+import asyncio
+from nostr_sdk import *
+
+
+async def main():
+    init_logger(LogLevel.INFO)
+
+    keys = Keys.parse("nsec1ufnus6pju578ste3v90xd5m2decpuzpql2295m3sknqcjzyys9ls0qlc85")
+    print(keys.public_key().to_bech32())
+
+    # Create/open LMDB database
+    database = NostrDatabase.lmdb("nostr-lmdb")
+
+    client = ClientBuilder().database(database).build()
+
+    await client.add_relay("wss://relay.damus.io")
+    await client.connect()
+
+    # Negentropy reconciliation
+    f = Filter().author(keys.public_key())
+    opts = SyncOptions()
+    await client.sync(f, opts)
+
+    # Query events from database
+    f = Filter().author(keys.public_key()).limit(10)
+    events = await client.database().query([f])
+    for event in events.to_vec():
+        print(event.as_json())
+
+if __name__ == '__main__':
+    asyncio.run(main())
+
+import asyncio
+from nostr_sdk import *
+
+
+async def main():
+    keys = Keys.generate()
+
+    # Build a text note
+    builder = EventBuilder.text_note("Note from rust-nostr python bindings")
+    event = await builder.sign(keys)
+    print(event.as_json())
+
+    # Build a custom event
+    kind = Kind(1234)
+    content = "My custom content"
+    builder = EventBuilder(kind, content)
+
+    # Sign with generic signer
+    event = await builder.sign(keys)
+    print(f"Event: {event.as_json()}")
+
+    # Sign specifically with keys
+    event = builder.sign_with_keys(keys)
+    print(f"Event: {event.as_json()}")
+
+    # POW
+    event = await builder.pow(24).sign(keys)
+    print(f"POW event: {event.as_json()}")
+
+    # Build unsigned event
+    event = builder.build(keys.public_key())
+    print(f"Event: {event.as_json()}")
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
+
+from nostr_sdk import Filter, Alphabet, Keys, SingleLetterTag, Kind, KindStandard
+
+keys = Keys.generate()
+
+f = (Filter()
+     .pubkey(keys.public_key())
+     .kinds([Kind(0), Kind.from_std(KindStandard.TEXT_NOTE)])
+     .custom_tag(SingleLetterTag.lowercase(Alphabet.J), ["test"])
+     )
+print(f.as_json())
+
+f = f.kind(Kind(4)).custom_tag(SingleLetterTag.lowercase(Alphabet.J), ["append-new"])
+print(f.as_json())
+
+from nostr_sdk import ClientBuilder, Options, RelayLimits
+
+# Custom relay limits
+limits = RelayLimits().event_max_size(128000)
+
+# OR, disable all limits
+l = RelayLimits.disable()
+
+opts = Options().relay_limits(l)
+client = ClientBuilder().opts(opts).build()
+
+# ...
+
+import asyncio
+from nostr_sdk import Metadata, Client, Keys, Filter, PublicKey, Kind, NostrSigner, KindStandard
+from datetime import timedelta
+
+
+async def main():
+    keys = Keys.generate()
+
+    signer = NostrSigner.keys(keys)
+    client = Client(signer)
+
+    await client.add_relay("wss://relay.damus.io")
+    await client.connect()
+
+    # Set metadata
+    metadata = Metadata() \
+        .set_name("username") \
+        .set_display_name("My Username") \
+        .set_about("Description") \
+        .set_picture("https://example.com/avatar.png") \
+        .set_banner("https://example.com/banner.png") \
+        .set_nip05("username@example.com") \
+        .set_lud16("pay@yukikishimoto.com")
+
+    print(f"Setting profile metadata for {keys.public_key().to_bech32()}...")
+    print(metadata.as_json())
+    await client.set_metadata(metadata)
+
+    # Get metadata
+    pk = PublicKey.parse("npub1drvpzev3syqt0kjrls50050uzf25gehpz9vgdw08hvex7e0vgfeq0eseet")
+    print(f"\nGetting profile metadata for {pk.to_bech32()}...")
+    f = Filter().kind(Kind.from_std(KindStandard.METADATA)).author(pk).limit(1)
+    events = await client.fetch_events([f], timedelta(seconds=10))
+    for event in events.to_vec():
+        metadata = Metadata.from_json(event.content())
+        print(f"Name: {metadata.get_name()}")
+        print(f"NIP05: {metadata.get_nip05()}")
+        print(f"LUD16: {metadata.get_lud16()}")
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
+
+from nostr_sdk import Keys, Event, ZapRequestData, PublicKey, SecretKey, EventBuilder, nip57_anonymous_zap_request, nip57_private_zap_request, nip57_decrypt_private_zap_message
+
+secret_key = SecretKey.parse("6b911fd37cdf5c81d4c0adb1ab7fa822ed253ab0ad9aa18d77257c88b29b718e")
+keys = Keys(secret_key)
+
+public_key = PublicKey.parse("npub14f8usejl26twx0dhuxjh9cas7keav9vr0v8nvtwtrjqx3vycc76qqh9nsy")
+relays = ["wss://relay.damus.io"]
+msg = "Zap!"
+data = ZapRequestData(public_key, relays).message(msg)
+
+public_zap = EventBuilder.public_zap_request(data).sign_with_keys(keys)
+print(f"Public zap request: {public_zap.as_json()}\n")
+
+anon_zap = nip57_anonymous_zap_request(data)
+print(f"Anonymous zap request: {anon_zap.as_json()}\n")
+
+private_zap = nip57_private_zap_request(data, keys)
+print(f"Private zap request: {private_zap.as_json()}\n")
+
+# Decode private zap message
+event_msg: Event = nip57_decrypt_private_zap_message(secret_key, public_key, private_zap)
+print(f"Private zap msg: {event_msg.content()}")
+
+import asyncio
+from nostr_sdk import Keys, Client, FileMetadata, EventBuilder
+
+
+async def main():
+    keys = Keys.generate()
+    print(keys.public_key().to_bech32())
+
+    client = Client(keys)
+
+    await client.add_relay("wss://relay.damus.io")
+    await client.connect()
+
+    try:
+        metadata = FileMetadata(
+            "https://github.com/coinstr/coinstr/archive/refs/tags/v0.3.0.zip",
+            "application/zip",
+            "3951c152d38317e9ef2c095ddb280613e22b14b166f5fa5950d18773ac0a1d00"
+        )
+        builder = EventBuilder.file_metadata("Coinstr Alpha Release v0.3.0", metadata)
+        output = await client.send_event_builder(builder)
+        print("Event sent:")
+        print(f" hex:    {output.id.to_hex()}")
+        print(f" bech32: {output.id.to_bech32()}")
+    except Exception as e:
+        print(f"{e}")
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
+
+import asyncio
+
+from nostr_sdk import Client
+
+
+async def main():
+    client = Client()
+
+    await client.add_relay("wss://relay.damus.io")
+    await client.add_relay("wss://nostr.wine")
+    await client.add_relay("wss://relay.nostr.info")
+    await client.connect()
+
+    while True:
+        relays = await client.relays()
+        for url, relay in relays.items():
+            stats = relay.stats()
+            print(f"Relay: {url}")
+            print(f"Connected: {relay.is_connected()}")
+            print(f"Status: {relay.status()}")
+            print("Stats:")
+            print(f"    Attempts: {stats.attempts()}")
+            print(f"    Success: {stats.success()}")
+            print(f"    Bytes sent: {stats.bytes_sent()}")
+            print(f"    Bytes received: {stats.bytes_received()}")
+            print(f"    Connected at: {stats.connected_at().to_human_datetime()}")
+
+            latency = stats.latency()
+            if latency is not None:
+                print(f"    Latency: {latency.total_seconds() * 1000} ms")
+
+            print("###########################################")
+
+        await asyncio.sleep(10.0)
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
+
+import asyncio
+from datetime import timedelta
+from nostr_sdk import *
+
+
+async def main():
+    # Init logger
+    init_logger(LogLevel.INFO)
+
+    client = Client()
+
+    # Add relays and connect
+    await client.add_relay("wss://relay.damus.io")
+    await client.add_relay("wss://nos.lol")
+    await client.connect()
+
+    print("Streaming events from relays...")
+
+    k = Kind(0)
+    f = Filter().kind(k).limit(5)
+
+    stream = await client.stream_events(f, timedelta(seconds=10))
+
+    while True:
+        event = await stream.next()
+
+        # Check if the stream is terminated
+        if event is None:
+            break
+
+        print(event.as_json())
+
+
+    print("Stream terminated.")
+
+if __name__ == '__main__':
+    asyncio.run(main())
+
+from nostr_sdk import Keys, EventBuilder, PublicKey, Tag, TagStandard
+
+keys = Keys.generate()
+
+other_user_pk = PublicKey.parse("npub14f8usejl26twx0dhuxjh9cas7keav9vr0v8nvtwtrjqx3vycc76qqh9nsy")
+
+tag = Tag.parse(["p", other_user_pk.to_hex()])
+# OR
+tag = Tag.from_standardized(TagStandard.PUBLIC_KEY_TAG(other_user_pk, None, None, False))
+# OR
+tag = Tag.public_key(other_user_pk)
+
+event = EventBuilder.text_note("New note from Rust Nostr python bindings").tags([tag]).sign_with_keys(keys)
+print(event.as_json())
+
+print("\nTags:")
+for tag in event.tags().to_vec():
+    print(tag.as_vec())
+
+import asyncio
+from nostr_sdk import Keys, ClientBuilder, Options, EventBuilder, Connection, ConnectionTarget, init_logger, LogLevel, NostrSigner
+
+
+async def main():
+    init_logger(LogLevel.INFO)
+
+    keys = Keys.generate()
+    print(keys.public_key().to_bech32())
+
+    # Configure client to use a tor proxy for `.onion` relays
+    connection = Connection().addr("127.0.0.1:9050").target(ConnectionTarget.ONION)
+    opts = Options().connection(connection)
+    signer = NostrSigner.keys(keys)
+    client = ClientBuilder().signer(signer).opts(opts).build()
+
+    await client.add_relay("wss://relay.damus.io")
+    await client.add_relay("ws://oxtrdevav64z64yb7x6rjg4ntzqjhedm5b5zjqulugknhzr46ny2qbad.onion")
+    await client.add_relay("ws://2jsnlhfnelig5acq6iacydmzdbdmg7xwunm4xl6qwbvzacw4lwrjmlyd.onion")
+    await client.connect()
+
+    event = EventBuilder.text_note("Hello from rust-nostr Python bindings!")
+    output = await client.send_event_builder(event)
+    print("Event sent:")
+    print(f" hex:    {output.id.to_hex()}")
+    print(f" bech32: {output.id.to_bech32()}")
+    print(f" Successfully sent to:    {output.success}")
+    print(f" Failed to send to: {output.failed}")
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
+
+import asyncio
+from nostr_sdk import PublicKey, ClientBuilder, Filter, Kind, init_logger, LogLevel, AdmitPolicy, AdmitStatus, Event, \
+    uniffi_set_event_loop
+from datetime import timedelta
+
+class WoT(AdmitPolicy):
+    def __init__(self):
+        self.allowed_public_keys = set()
+
+    def allow(self, pk: PublicKey):
+        self.allowed_public_keys.add(pk)
+
+    async def admit_event(self, relay_url: str, subscription_id: str, event: Event) -> AdmitStatus:
+        if event.author() in self.allowed_public_keys:
+            return AdmitStatus.SUCCESS
+        else:
+            return AdmitStatus.REJECTED
+
+async def main():
+    uniffi_set_event_loop(asyncio.get_running_loop())
+
+    # Init logger
+    init_logger(LogLevel.INFO)
+
+    whitelisted_public_key = PublicKey.parse("npub1l2vyh47mk2p0qlsku7hg0vn29faehy9hy34ygaclpn66ukqp3afqutajft")
+    not_whitelisted_public_key = PublicKey.parse("npub1xtscya34g58tk0z605fvr788k263gsu6cy9x0mhnm87echrgufzsevkk5s")
+
+    wot = WoT()
+    wot.allow(whitelisted_public_key)
+
+    # Init client
+    client = ClientBuilder().admit_policy(wot).build()
+    await client.add_relay("wss://relay.damus.io")
+    await client.connect()
+
+    # Get events
+    f = Filter().authors([whitelisted_public_key, not_whitelisted_public_key]).kind(Kind(0))
+    events = await client.fetch_events(f, timedelta(seconds=10))
+    print(f"Received {events.len()} events")
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
+
+    
